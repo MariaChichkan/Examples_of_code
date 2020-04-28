@@ -79,7 +79,7 @@ class Testcase:
             test_cases_str = ','.join(chunc)
             resp = requests.get(
                 'https://sbtatlas.sigma.sbrf.ru/jira/rest/atm/1.0/testcase/search?query=key+IN+(' + test_cases_str + ')',
-                auth=('16711105', 'Mashka1234567$'), verify=False)
+                auth=('LOGIN', 'PASSW'), verify=False)
             if resp.status_code == 200:
                 if len(resp.json()) != len(chunc):
                     contains_broken = [d['key'] for d in resp.json()]
@@ -146,8 +146,8 @@ if __name__ == '__main__':
     print(f'broken_testcase:{broken_testcase}')
     df_testcase, df_rubbish = testcase.clear_rubbish(df_testcase, 'testData')
 
-    APPMETR_TOKEN  = 'AgAAAAA_hdsbAAZI7Sai4e5kwkxoiY-D1N-CeCg'
-    APP_ID = '284215'
+    APPMETR_TOKEN  = 'TOKEN'
+    APP_ID = '11111'
     loader = AppmetricaApiLoader(APPMETR_TOKEN, APP_ID)
     appmetric_json = loader.load_events_json(fields='event_name,device_manufacturer,device_model,os_version,'
                                                     'app_build_number,android_id',
