@@ -470,141 +470,6 @@ def find_feature():
                 break
     return jsonify(second_out_json)
 
-@app.route('/api/go_to_release', methods=['POST'])
-@app.route('/portal/api/go_to_release', methods=['POST'])
-def releases():
-    content = request.get_json(silent=True)
-    print(content)
-    global Session
-    #global tunnel
-
-    session = Session()
-    data = json.loads(content['body'])
-
-    # datetime object containing current date and time
-    now = datetime.now()
-    # dd/mm/YY H:M:S
-    dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
-
-    # dd/mm/YY H:M:S
-    dt_string = now.strftime("%Y-%m-%d")
-    try:
-        try:
-            log_item = LogTable(content['body'])
-            session.add(log_item)
-            session.commit()
-        except Exception as ex:
-            print(ex)
-            return jsonify({'body': 'LogTable commit fail'})
-
-
-        feature_name = data[0]['title']
-        n_obj = FeatureDescriptionRow(str(uuid.uuid4()), data[0]['title'], data[0]['user'], dt_string, dt_string)
-        try:
-            session.add(n_obj)
-            session.commit()
-            session.refresh(n_obj)
-            print("first commit into DB - ok")
-            print(n_obj.feature_id)
-        except Exception as FC:
-            print(FC)
-            return jsonify({'body': 'db commit fail'})
-        f_id_new = n_obj.feature_id
-
-        app_id_list = list()
-        for relese_link in data[0]['release-links']:
-            segment = relese_link['segment'] if "segment" in relese_link  else "no-segment"
-            req_type = relese_link['type'] if "type" in relese_link else "no-type"
-
-            if relese_link['platform'] in ['erib']:
-                continue
-
-            if relese_link['platform'] not in ['ufs', 'ufssbolpro']:
-                relese_id = relese_link['release-id']
-                ufs_flag_type = False
-                story_key = relese_link['story-keys'][0]
-            else:
-                relese_id = relese_link['swell-id']
-                ufs_flag_type = True
-                story_key = relese_link['release-keys'][0]
-            release_row = session.query(ReleaseRow).filter(ReleaseRow.release_id == relese_id).one()
-            n_obj = RequestRelease(str(uuid.uuid4()), story_key, f_id_new, relese_link['platform'], relese_id, release_row.jira_key, segment, req_type)
-            session.add(n_obj)
-            try:
-                session.commit()
-                session.refresh(n_obj)
-                print(f"requst rel app_id: {n_obj.application_id}")
-            except Exception as FC:
-                print(FC)
-                return jsonify({'body': 'db commit fail'})
-
-            app_id = n_obj.application_id
-            app_id_list.append(app_id)
-
-        application_index = 0
-        for relese_link in data[0]['release-links']:
-            req_type = relese_link['type'] if "type" in relese_link else "no-type"
-
-            if relese_link['platform'] in ['erib']:
-                session.add(EribRequest(f_id_new))
-                try:
-                    session.commit()
-                    print("EribRequest commit into DB - ok")
-                except Exception as FC:
-                    print(FC)
-                    return jsonify({'body': 'db commit fail'})
-                continue
-
-            if relese_link['platform'] not in ['ufs', 'ufssbolpro']:
-                relese_id = relese_link['release-id']
-            else:
-                relese_id = relese_link['swell-id']
-
-            release_row = session.query(ReleaseRow).filter(ReleaseRow.release_id == relese_id).one()
-
-            if relese_link['platform'] in ['ios', 'android', 'web', 'sbolpro']:
-                new_obj = RelationRelFeature(app_id_list[application_index],
-                                             relese_link['platform'],
-                                             feature_name,
-                                             release_row.jira_key,  # new_row.jira_key
-                                             relese_link['story-keys'][0],
-                                             req_type,
-                                             "", "", "")
-                session.add(new_obj)
-                try:
-                    session.commit()
-                    print("RelationRelFeature commit into DB - ok")
-                except Exception as FC:
-                    print(FC)
-                    return jsonify({'body': 'db commit fail'})
-
-            elif relese_link['platform'] in ["ufs", 'ufssbolpro', "ufssbolprolight"]:
-                cannels = relese_link['channels'] if 'channels' in relese_link else ""
-                new_obj = RelationSwellFeature(app_id_list[application_index],
-                                             relese_link['platform'],
-                                             feature_name,
-                                             release_row.jira_key,
-                                             relese_link['release-keys'][0],
-                                             req_type,
-                                             "", "", "",
-                                             cannels)
-
-                session.add(new_obj)
-                if "mass-id" in relese_link:
-                    mass_f = session.query(MassFeature).filter(MassFeature.id == relese_link['mass-id']).one()
-                    session.add(MassFeatureLink(str(uuid.uuid4()), mass_f.key, relese_link['release-keys'][0]))
-                try:
-                    session.commit()
-                    print("RelationSwellFeature commit into DB - ok")
-                except Exception as FC:
-                    print(FC)
-                    return jsonify({'body': 'db commit fail'})
-
-            application_index += 1
-        print("END of work with DB!")
-    finally:
-        session.close()
-    return jsonify({'body': 'ok'})
 
 
 @app.route('/api/get_dashboard')
@@ -738,35 +603,7 @@ def feature_card(feature_id):
         except Exception as ex:
             print(ex)
             return jsonify({'body': f'db select from DOR or DORInformation fail:{str(ex)}'})
-        # try:
-        #     # Подтянем все ДОРы по каждому из application
-        #     df_dor = pd.read_sql(session.query(DOR).filter(DOR.application_id.in_(application_lst)).statement, engine)
-        #     df_dor['DOR-stat'] = 1
-        #     df_statuses = df_dor.groupby(['application_id', 'status'])['DOR-stat'].sum().reset_index()
-        #     df_dor = df_dor[["application_id", "subtask_key", "dor_type_id", "content", "status", "user", "assignee_key",
-        #                      "assignee_name", "assignee_email", "last_update"]]
-        #     df_dor.rename(columns={"application_id": "application-id","subtask_key":"subtask-key", "dor_type_id": "dor-type-id",
-        #                            "assignee_key": "assignee-key", "assignee_name": "assignee-name",
-        #                            "assignee_email":"assignee-email", "last_update": "last-update"}, inplace=True)
-        #     dor_type_id_lst = list(set(df_dor["dor-type-id"].to_list()))
-        # except Exception as ex:
-        #     print(ex)
-        #     return jsonify({'body': f'db select from DOR fail:{str(ex)}'})
-        # try:
-        #     # Подтянем инфомацию по тем типам ДОРов которые есть в выборке ДОРов
-        #     df_dor_info = pd.read_sql(
-        #         session.query(DORInformation).filter(DORInformation.dor_type_id.in_(dor_type_id_lst)).statement, engine)
-        #     df_dor_info = df_dor_info[
-        #         ["dor_type_id", "category", "dor_name", "label", "short_description", "upper_text", "placeholder",
-        #          "description", "dor_type", "close_date"]]
-        #     df_dor_info = df_dor_info.sort_values(by='dor_type_id')
-        #     df_dor_info = df_dor_info.drop_duplicates(subset='dor_type_id', keep="first")
-        #     df_dor_info.rename(columns={"dor_type_id": "dor-type-id", "dor_name": "name", "short_description": "short-desc",
-        #                                 "upper_text": "upper-text", "dor_type": "type", "close_date": "close-day",
-        #                                 }, inplace=True)
-        # except Exception as ex:
-        #     print(ex)
-        #     return jsonify({'body': f'db select from DORInformation fail:{str(ex)}'})
+
         df_statuses = df_statuses[df_statuses['status'].isin(['to-fill', 'to-fix', 'in-progress', 'complete']) == True]
         df_statuses['status'] = np.where(df_statuses['status'] == 'to-fill', 'DOR-to-fill', df_statuses['status'])
         df_statuses['status'] = np.where(df_statuses['status'] == 'to-fix', 'DOR-to-fix', df_statuses['status'])
@@ -890,13 +727,6 @@ def release_card(release_id):
 
         df_dor_info = pd.read_sql(
             session.query(DORInformation).filter(DORInformation.dor_type_id.in_(dor_types_lst)).statement, engine)
-        # df_dor = pd.read_sql(
-        #     session.query(DOR).filter(DOR.application_id.in_(application_lst)).statement, engine)
-        #
-        # dor_types_lst = list(set(df_dor['dor_type_id'].to_list()))
-        #
-        # df_dor_info = pd.read_sql(
-        #     session.query(DORInformation).filter(DORInformation.dor_type_id.in_(dor_types_lst)).statement, engine)
 
         teams = session.query(ProjectDescription).all()
         team_dict = {row.key: row.name for row in teams}
@@ -975,77 +805,6 @@ def release_card(release_id):
     except Exception as ex:
         session.close()
         return jsonify({'body': f'{str(ex)}'})
-
-# def count_teams_and_features():
-#     """
-#     Метод возвращает словарь:
-#     {"count_team":  {'release-key': количество команд для релиза,}
-#      "count_features":  {'release-key': количество фичей для релиза,} }
-#     Пример использования: res["count_team"]['DBIOSCA-113291']
-#     """
-#     global Session
-#     #global tunnel
-#     session = Session()
-#     try:
-#
-#         # получаем все записи из табл. request_to_release
-#         request_to_release = session.query(RequestRelease).all()
-#
-#         # шаблон словарь: ключ - ключ релиза, значение список
-#         teampl_dict = {row.release_key: list() for row in request_to_release}
-#
-#         # словарь для работы с количеством фичей в релизе
-#         features_count = copy.deepcopy(teampl_dict)
-#
-#         # словарь для работы с количеством команд в релизе team
-#         teams_count = copy.deepcopy(teampl_dict)
-#
-#         for item in request_to_release:
-#             features_count[item.release_key].append(item.application_id)
-#
-#         def fill_team_dict(table, teams_count):
-#             for row in table:
-#                 if hasattr(row, 'story_key'):
-#                     if row.story_key is None:
-#                         continue
-#                     if row.release_key not in teams_count:
-#                         teams_count[row.release_key] = list()
-#                     team_key = row.story_key[:row.story_key.find('-')]
-#                     teams_count[row.release_key].append(team_key)
-#                 else:
-#                     if row.swell_key is None:
-#                         continue
-#                     if row.swell_key not in teams_count:
-#                         teams_count[row.swell_key] = list()
-#                     team_key = row.release_key[:row.release_key.find('-')]
-#                     teams_count[row.swell_key].append(team_key)
-#
-#
-#         relation_release_feature = session.query(RelationRelFeature).all()
-#         fill_team_dict(relation_release_feature, teams_count)
-#
-#         relation_swell_feature = session.query(RelationSwellFeature).all()
-#         fill_team_dict(relation_swell_feature, teams_count)
-#         #
-#         # if release_id is not None and feature_count is True:
-#         #     return len(features_count[release_id])
-#         #
-#         # if team_count is not None and feature_count is True:
-#         #     return len(teams_count[release_id])
-#         #
-#         # if get_dict_features:
-#         #     features_count = {key: len(value) for key, value in features_count.items()}
-#         #     return features_count
-#         #
-#         # if get_dict_teams:
-#         #     teams_count = {key: set(value) for key, value in teams_count.items()}
-#         #     return teams_count
-#         features_count = {key: len(value) for key, value in features_count.items()}
-#         teams_count = {key: len(set(value)) for key, value in teams_count.items()}
-#         session.close()
-#         return {"count_features": features_count, "count_team": teams_count}
-#     finally:
-#         session.close()
 
 @app.route('/portal/api/update-DOR', methods=['POST'])
 def update_dor():
@@ -1324,26 +1083,26 @@ def update_release_info():
 
 
 # for local testing
-@app.route('/portal/')
-@app.route('/portal')
-@app.route('/feature')
-@app.route('/')
-def feature():
-    return render_template('index.html')
+# @app.route('/portal/')
+# @app.route('/portal')
+# @app.route('/feature')
+# @app.route('/')
+# def feature():
+#     return render_template('index.html')
 
-@app.route('/', defaults={'path': ''})
-@app.route('/portal/', defaults={'path':''})
-@app.route('/portal/<path:path>')
+# @app.route('/', defaults={'path': ''})
+# @app.route('/portal/', defaults={'path':''})
+# @app.route('/portal/<path:path>')
 
-# @app.route('/portal/<PATH:PATH>')
-def index(path):
-    True
-    print('TEST - portal', file=sys.stderr)
-    if path != "":  # path != "" and os.path.exists(current_app.root_path + "/static/" + path):
-        path_to_file = os.path.join(current_app.root_path, 'portal')
-        return send_from_directory(path_to_file, path)
-    else:
-        return render_template('index.html')
+# # @app.route('/portal/<PATH:PATH>')
+# def index(path):
+#     True
+#     print('TEST - portal', file=sys.stderr)
+#     if path != "":  # path != "" and os.path.exists(current_app.root_path + "/static/" + path):
+#         path_to_file = os.path.join(current_app.root_path, 'portal')
+#         return send_from_directory(path_to_file, path)
+#     else:
+#         return render_template('index.html')
 #
 Session, engine = create_db_session() #tunnel.local_bind_port
-app.run()
+# app.run()
