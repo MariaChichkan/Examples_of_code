@@ -41,70 +41,7 @@ def update_json():
     resp = jsonify(success=True)
     return resp
 
-@app.route('/api/releases')
-@app.route('/portal/api/releases')
-def api_releases():
-    args = str(request.args)
-    form = str(request.form)
-    print(request.get_data())
-    print(args)
-    print(form)
-    full = request.args.get('full')
-    now = datetime.now()
 
-    with open('releases-3.json') as f:
-        read_data = f.read()
-        x = json.loads(read_data)
-
-    list_of_dict = list()
-    for item in x['body'][0]['releases']:
-        if (item['key'] == '') or \
-            ('freeze' not in item['dates']) and \
-            ('publication' not in item['dates']) and \
-            ('publication-finish' not in item['dates']):
-            continue
-        freeze_flag = False
-        if 'freeze' in item['dates']:
-            datetime_str = item['dates']['freeze']
-            freeze_flag = True
-        if 'publication-finish' in item['dates']:
-            datetime_str = item['dates']['publication-finish']
-        datetime_object = datetime.strptime(datetime_str, '%d-%m-%Y')
-        if datetime_object >= now and full == "NO":
-            dict_for_sort = copy.deepcopy(item)
-            if freeze_flag:
-                dict_for_sort['date_sort'] = dict_for_sort['dates']['freeze']
-            else:
-                dict_for_sort['date_sort'] = dict_for_sort['dates']['publication-finish']
-            # подходящие по условию будем добавлять в результирующий json
-            list_of_dict.append(dict_for_sort)
-
-        if full == "YES":
-            dict_for_sort = copy.deepcopy(item)
-            if freeze_flag:
-                dict_for_sort['date_sort'] = dict_for_sort['dates']['freeze']
-            else:
-                dict_for_sort['date_sort'] = dict_for_sort['dates']['publication-finish']
-            # подходящие по условию будем добавлять в результирующий json
-            list_of_dict.append(dict_for_sort)
-    # list_of_dict.sort(key=operator.itemgetter('date_sort'))
-    sortedArray = sorted(
-                         list_of_dict,
-                         key=lambda x: datetime.strptime(x['date_sort'], '%d-%m-%Y')
-                        )
-    dict_to_return = dict()
-    dict_to_return['body'] = list()
-    dict_in_body = dict()
-    dict_in_body["user"] = "Rashitov-MT"
-    dict_in_body["releases"] = sortedArray #sortedArray
-    # это ключ
-    # web-page-prefix
-    dict_in_body["web-page-prefix"] = "https://sbtatlas.sigma.sbrf.ru/wiki/pages/viewpage.action?pageId="
-    dict_in_body["web-pages"] = x['body'][0]["web-pages"]#list()
-    # dict_in_body["web-pages"].append(x['body'][0])
-    # надо заполниль список для ключа web-pages from table linttoconfl
-    dict_to_return['body'].append(dict_in_body)
-    return jsonify(dict_to_return)
 
 @app.route('/api/get-releases',  methods=['POST'])
 @app.route('/portal/api/get-releases',  methods=['POST'])
@@ -411,67 +348,6 @@ def find_feature():
         dict_to_return['body'].append(dict_in_body)
 
 
-    def factor_relese(release):
-        try:
-            if content['body'][0]['release-id'] == "":
-                return True
-            if content['body'][0]['release-id'] == release:
-                return True
-            else:
-                return False
-        except Exception as Ex:
-            print(Ex)
-            return True
-
-    def factor_title(title):
-        try:
-            if content['body'][0]['title'] == "":
-                return True
-            if title.find(content['body'][0]['title']) != -1:
-                    return True
-            else:
-                return False
-        except Exception as Ex:
-            print(Ex)
-            return True
-
-    def factor_date(date):
-        try:
-            if content['body'][0]['date-from'] == "":
-                return True
-            if content['body'][0]['date-from'].find(date) != -1:
-                return True
-            else:
-                return False
-        except Exception as Ex:
-            print(Ex)
-            return True
-
-    def factor_story(story_list):
-        try:
-            if content['body'][0]["story-keys"][0] == "":
-                return True
-            if content['body'][0]['story-keys'][0] in story_list:
-                return True
-            else:
-                return False
-        except Exception as Ex:
-            print(Ex)
-            return True
-
-    second_out_json = dict()
-    second_out_json['body'] = list()
-    #  внутри словоря dict_to_return['body'] - список словарей
-    for row in dict_to_return['body']:
-        for item in row["release-links"]:
-            if factor_relese(item["release-id"]) and factor_title(row['title']) and factor_date(row['created']) \
-                     and factor_story(item["story-keys"]):
-                second_out_json['body'].append(row)
-                break
-    return jsonify(second_out_json)
-
-
-
 @app.route('/api/get_dashboard')
 @app.route('/portal/api/get_dashboard')
 def get_json():
@@ -693,7 +569,6 @@ def feature_card(feature_id):
 @app.route('/portal/api/get-card-release/<path:release_id>')
 def release_card(release_id):
     global Session
-    #global tunnel
     session = Session()
     try:
         # Подтянем инфомацию по релизу
