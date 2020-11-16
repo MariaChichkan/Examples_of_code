@@ -1,4 +1,8 @@
-from mysql_orm import  Base
+import sys
+sys.path.insert(0, "/home/Shared")
+sys.path.insert(0, "/home/DB_model")
+sys.path.insert(0, "/Users/a16711105/db_model")
+
 from jira_extractor import JiraIssues,  JiraDataByProject
 from release_db_updater import UpdateReleaseDB
 import urllib3
@@ -15,7 +19,8 @@ def main():
     pymysql.install_as_MySQLdb()
     logger, start_time = start_logging('update_db_from_jira')
     try:
-        Session, engine = create_db_session()
+        mode = "prod"
+        Session, engine = create_db_session(mode)
         session = Session()
         jira_data_by_pr = JiraDataByProject(logger, session)
         project_data_mp = jira_data_by_pr.get_web_mp_data("DBIOSCA")
@@ -29,8 +34,7 @@ def main():
         print(ex)
     finally:
         update_time = datetime.datetime.now().replace(microsecond=0) - start_time
-        logger.info(
-                    f'End of DB updating. Update time: {str(update_time)}')
+        logger.info(f"End of DB updating. Update time: {str(update_time)}")
         session.close()
 
 
