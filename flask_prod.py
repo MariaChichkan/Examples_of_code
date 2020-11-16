@@ -1,36 +1,51 @@
+import sys
+sys.path.insert(0, "/home/Shared")
+sys.path.insert(0, "/home/DB_model")
+sys.path.insert(0, "/Users/a16711105/db_model")
 from flask import Flask, send_from_directory, current_app
 from flask import render_template, request
 from sqlalchemy import or_, and_
 import json
 from flask import jsonify
+import simplejson
 import pymysql
+import json
 from datetime import datetime, timedelta
 import copy
 import pandas as pd
 import numpy as np
 import uuid
 import re
-import sys
+
 import os
+import argparse
+
 from sqlalchemy.dialects.mysql import insert
 from mysql_orm import FeatureDescriptionRow, RequestRelease, RelationRelFeature, EribRequest, LogTable, \
     RelationSwellFeature, ReleaseRow,  ProjectDescription,  DOR,  DORInformation,   ReleaseDates,  Base, MassFeature,\
-    MassFeatureLink, ReleasePages
-from utils import connect_jira, create_db_session, count_teams_and_features, TextParser
-
+    MassFeatureLink, ReleasePages, ApplicationQuantity, AndroidExtraInfo
+from utils import connect_jira, create_db_session, count_teams_and_apps, TextParser, create_update_stmt, \
+    update_teams_and_apps
+from move_features import movefeatures
 from sqlalchemy.pool import NullPool
-from jira_extractor import  JiraDataByProject
 from sqlalchemy import create_engine, MetaData, Table, Column, String, Integer
 from sqlalchemy.orm import mapper, sessionmaker
 
+parser = argparse.ArgumentParser(description='Command line parser')
+parser.add_argument('--mode', type=str, help='Start mode (Prod / Test)', default='FUUUU')
+args = parser.parse_args()
+mode = args.mode
 
+# mode = "test"
 pymysql.install_as_MySQLdb()
 app = Flask(__name__, static_url_path='')
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 
 
-@app.route('/api/update_json', methods=['POST'])
-@app.route('/portal/api/update_json', methods=['POST'])
+
+
+@app.route('/portal/api/update-json', methods=['POST'])
+@app.route('/portal/api/test/update-json', methods=['POST'])
 def update_json():
     content = request.get_json(silent=True)
     print(content)
@@ -42,9 +57,74 @@ def update_json():
     return resp
 
 
+@app.route('/portal/api/releases')
+@app.route('/portal/api/test/releases')
+def api_releases():
+    args = str(request.args)
+    form = str(request.form)
+    print(request.get_data())
+    print(args)
+    print(form)
+    full = request.args.get('full')
+    now = datetime.now()
 
-@app.route('/api/get-releases',  methods=['POST'])
+    with open('releases-3.json') as f:
+        read_data = f.read()
+        x = json.loads(read_data)
+
+    list_of_dict = list()
+    for item in x['body'][0]['releases']:
+        if (item['key'] == '') or \
+            ('freeze' not in item['dates']) and \
+            ('publication' not in item['dates']) and \
+            ('publication-finish' not in item['dates']):
+            continue
+        freeze_flag = False
+        if 'freeze' in item['dates']:
+            datetime_str = item['dates']['freeze']
+            freeze_flag = True
+        if 'publication-finish' in item['dates']:
+            datetime_str = item['dates']['publication-finish']
+        datetime_object = datetime.strptime(datetime_str, '%d-%m-%Y')
+        if datetime_object >= now and full == "NO":
+            dict_for_sort = copy.deepcopy(item)
+            if freeze_flag:
+                dict_for_sort['date_sort'] = dict_for_sort['dates']['freeze']
+            else:
+                dict_for_sort['date_sort'] = dict_for_sort['dates']['publication-finish']
+            # подходящие по условию будем добавлять в результирующий json
+            list_of_dict.append(dict_for_sort)
+
+        if full == "YES":
+            dict_for_sort = copy.deepcopy(item)
+            if freeze_flag:
+                dict_for_sort['date_sort'] = dict_for_sort['dates']['freeze']
+            else:
+                dict_for_sort['date_sort'] = dict_for_sort['dates']['publication-finish']
+            # подходящие по условию будем добавлять в результирующий json
+            list_of_dict.append(dict_for_sort)
+    # list_of_dict.sort(key=operator.itemgetter('date_sort'))
+    sortedArray = sorted(
+                         list_of_dict,
+                         key=lambda x: datetime.strptime(x['date_sort'], '%d-%m-%Y')
+                        )
+    dict_to_return = dict()
+    dict_to_return['body'] = list()
+    dict_in_body = dict()
+    dict_in_body["user"] = "Rashitov-MT"
+    dict_in_body["releases"] = sortedArray #sortedArray
+    # это ключ
+    # web-page-prefix
+    dict_in_body["web-page-prefix"] = "https://sbtatlas.sigma.sbrf.ru/wiki/pages/viewpage.action?pageId="
+    dict_in_body["web-pages"] = x['body'][0]["web-pages"]#list()
+    # dict_in_body["web-pages"].append(x['body'][0])
+    # надо заполниль список для ключа web-pages from table linttoconfl
+    dict_to_return['body'].append(dict_in_body)
+    return simplejson.dumps(dict_to_return, ignore_nan=True)
+
+
 @app.route('/portal/api/get-releases',  methods=['POST'])
+@app.route('/portal/api/test/get-releases',  methods=['POST'])
 def get_releases():
     global Session
     content = request.get_json(silent=True)
@@ -85,7 +165,7 @@ def get_releases():
         df_dates_right_form = df_all_releasedates
         df_dates_right_form["date"] = df_dates_right_form["date"].dt.strftime('%Y-%m-%d')
     except Exception as ex:
-        return jsonify({'body': f'{str(ex)}'})
+        return simplejson.dumps({'body': f'{str(ex)}'}, ignore_nan=True)
     finally:
         session.close()
     if mode == 'register-application':
@@ -147,10 +227,11 @@ def get_releases():
                           "releases": releases,
                           "web-page-prefix": "https://sbtatlas.sigma.sbrf.ru/wiki/pages/viewpage.action?pageId=",
                           "web-pages": release_pages}]}
-    return jsonify(release_json)
+    return simplejson.dumps(release_json, ignore_nan=True)
 
 
 @app.route('/portal/api/find-feature', methods=['POST'])
+@app.route('/portal/api/test/find-feature', methods=['POST'])
 def find_feature_V2():
     global Session
     #global tunnel
@@ -166,6 +247,7 @@ def find_feature_V2():
     content = request.get_json(silent=True)
     if 'body' in content:
         body = content['body'][0]
+    print(f"body{body}")
     if 'release-id' in body:
         release_id = body['release-id']
     if 'title' in body:
@@ -174,9 +256,9 @@ def find_feature_V2():
         datefrom = body['date-from']
     if 'date-to' in body:
         dateto = body['date-to']
-    if 'stories' in body:
-        stories = body['stories']
-
+    if 'story-keys' in body:
+        stories = body['story-keys']
+    stories = [x for x in stories if x not in [None, ""]]
     release_query = {}
     filters = []
     filters_ufs = []
@@ -237,7 +319,7 @@ def find_feature_V2():
             session.query(ProjectDescription).filter(ProjectDescription.key.in_(teams_lst)).statement, engine)
 
     except Exception as ex:
-        return jsonify({{'body': ex}})
+        return simplejson.dumps({{'body': ex}}, ignore_nan=True)
     finally:
         session.close()
 
@@ -245,7 +327,7 @@ def find_feature_V2():
     df_features = pd.merge(df_features, df_project_description, on='team_key', how="left")
     df_features['team_name'].fillna("", inplace=True)
     if df_features.shape[0] == 0:
-        return jsonify({"body": []})
+        return simplejson.dumps({"body": []})
     df_feature_stories = df_features.groupby(['feature_id', 'release_id'])['story_key'].apply(list).reset_index()
     df_feature_stories.rename(columns={'story_key': 'story_key_lst'}, inplace=True)
     df_features = df_features.sort_values(by=['feature_id', 'release_id'])
@@ -266,7 +348,7 @@ def find_feature_V2():
                 "type": row['type'],
                 "application-id": row['application_id'],
                 "application-key": row['application_key'],
-                "application-status": ""
+                "application-status": row['status']
             })
         feature_json.append({"title": df_feature['name'].iloc[0],
                              "feature-id": df_feature['feature_id'].iloc[0],
@@ -275,9 +357,10 @@ def find_feature_V2():
                              "created": df_feature['created'].iloc[0],
                              "updated": df_feature['updated'].iloc[0],
                              "release-links": release_links})
-    return jsonify({"body": feature_json})
+    return simplejson.dumps({"body": feature_json}, ignore_nan=True)
 
 @app.route('/portal/api/find_feature', methods=['POST'])
+@app.route('/portal/api/test/find_feature', methods=['POST'])
 def find_feature():
     global Session
     global engine
@@ -348,12 +431,294 @@ def find_feature():
         dict_to_return['body'].append(dict_in_body)
 
 
-@app.route('/api/get_dashboard')
-@app.route('/portal/api/get_dashboard')
-def get_json():
-    return send_from_directory(current_app.root_path, "release-dashboard.json")
+    def factor_relese(release):
+        try:
+            if content['body'][0]['release-id'] == "":
+                return True
+            if content['body'][0]['release-id'] == release:
+                return True
+            else:
+                return False
+        except Exception as Ex:
+            print(Ex)
+            return True
+
+    def factor_title(title):
+        try:
+            if content['body'][0]['title'] == "":
+                return True
+            if title.find(content['body'][0]['title']) != -1:
+                    return True
+            else:
+                return False
+        except Exception as Ex:
+            print(Ex)
+            return True
+
+    def factor_date(date):
+        try:
+            if content['body'][0]['date-from'] == "":
+                return True
+            if content['body'][0]['date-from'].find(date) != -1:
+                return True
+            else:
+                return False
+        except Exception as Ex:
+            print(Ex)
+            return True
+
+    def factor_story(story_list):
+        try:
+            if content['body'][0]["story-keys"][0] == "":
+                return True
+            if content['body'][0]['story-keys'][0] in story_list:
+                return True
+            else:
+                return False
+        except Exception as Ex:
+            print(Ex)
+            return True
+
+    second_out_json = dict()
+    second_out_json['body'] = list()
+    #  внутри словоря dict_to_return['body'] - список словарей
+    for row in dict_to_return['body']:
+        for item in row["release-links"]:
+            if factor_relese(item["release-id"]) and factor_title(row['title']) and factor_date(row['created']) \
+                     and factor_story(item["story-keys"]):
+                second_out_json['body'].append(row)
+                break
+    return simplejson.dumps(second_out_json, ignore_nan=True)
+
+
+@app.route('/portal/api/create-feature', methods=['POST'])
+@app.route('/portal/api/go_to_release', methods=['POST'])
+@app.route('/portal/api/test/create-feature', methods=['POST'])
+@app.route('/portal/api/test/go_to_release', methods=['POST'])
+def releases():
+    content = request.get_json(silent=True)
+    print(content)
+    global Session
+    #global tunnel
+
+    session = Session()
+    data = content['body']
+
+    # datetime object containing current date and time
+    now = datetime.now()
+    # dd/mm/YY H:M:S
+    dt_string = now.strftime("%d/%m/%Y %H:%M:%S")
+
+    # dd/mm/YY H:M:S
+    dt_string = now.strftime("%Y-%m-%d")
+    try:
+        try:
+            log_item = LogTable(str(content['body'][0]))
+            session.add(log_item)
+            session.commit()
+        except Exception as ex:
+            print(ex)
+            return simplejson.dumps({'body': 'LogTable commit fail'})
+
+
+        feature_name = data[0]['title']
+        n_obj = FeatureDescriptionRow(str(uuid.uuid4()), data[0]['title'], data[0]['user'], dt_string, dt_string)
+        try:
+            session.add(n_obj)
+            session.commit()
+            session.refresh(n_obj)
+            print("first commit into DB - ok")
+            print(n_obj.feature_id)
+        except Exception as FC:
+            print(FC)
+            return simplejson.dumps({'body': 'db commit fail'})
+        f_id_new = n_obj.feature_id
+
+        app_id_list = list()
+        for relese_link in data[0]['release-links']:
+            segment = relese_link['segment'] if "segment" in relese_link  else "no-segment"
+            req_type = relese_link['type'] if "type" in relese_link else "no-type"
+
+            if relese_link['platform'] in ['erib']:
+                continue
+
+            if relese_link['platform'] not in ['ufs', 'ufssbolpro']:
+                relese_id = relese_link['release-id']
+                ufs_flag_type = False
+            else:
+                relese_id = relese_link['swell-id']
+                ufs_flag_type = True
+            release_row = session.query(ReleaseRow).filter(ReleaseRow.release_id == relese_id).one()
+            n_obj = RequestRelease(str(uuid.uuid4()), "", f_id_new, relese_link['platform'], relese_id, release_row.jira_key, segment, req_type, "open")
+            session.add(n_obj)
+            try:
+                session.commit()
+                session.refresh(n_obj)
+                print(f"requst rel app_id: {n_obj.application_id}")
+            except Exception as FC:
+                print(FC)
+                return simplejson.dumps({'body': 'db commit fail'})
+
+            app_id = n_obj.application_id
+            app_id_list.append(app_id)
+
+        application_index = 0
+        for relese_link in data[0]['release-links']:
+            req_type = relese_link['type'] if "type" in relese_link else "no-type"
+
+            if relese_link['platform'] in ['erib']:
+                session.add(EribRequest(f_id_new))
+                try:
+                    session.commit()
+                    print("EribRequest commit into DB - ok")
+                except Exception as FC:
+                    print(FC)
+                    return simplejson.dumps({'body': 'db commit fail'})
+                continue
+
+            if relese_link['platform'] not in ['ufs', 'ufssbolpro']:
+                relese_id = relese_link['release-id']
+            else:
+                relese_id = relese_link['swell-id']
+
+            release_row = session.query(ReleaseRow).filter(ReleaseRow.release_id == relese_id).one()
+
+            if relese_link['platform'] in ['ios', 'android', 'web', 'sbolpro']:
+                new_obj = RelationRelFeature(app_id_list[application_index],
+                                             relese_link['platform'],
+                                             feature_name,
+                                             release_row.jira_key,  # new_row.jira_key
+                                             relese_link['story-keys'][0],
+                                             req_type,
+                                             "", "", "")
+                session.add(new_obj)
+                try:
+                    session.commit()
+                    print("RelationRelFeature commit into DB - ok")
+                except Exception as FC:
+                    print(FC)
+                    return simplejson.dumps({'body': 'db commit fail'})
+
+            elif relese_link['platform'] in ["ufs", 'ufssbolpro', "ufssbolprolight"]:
+                cannels = relese_link['channels'] if 'channels' in relese_link else ""
+                new_obj = RelationSwellFeature(app_id_list[application_index],
+                                             relese_link['platform'],
+                                             feature_name,
+                                             release_row.jira_key,
+                                             relese_link['release-keys'][0],
+                                             req_type,
+                                             "", "", "",
+                                             cannels)
+
+                session.add(new_obj)
+                if "mass-id" in relese_link:
+                    mass_f = session.query(MassFeature).filter(MassFeature.id == relese_link['mass-id']).one()
+                    session.add(MassFeatureLink(str(uuid.uuid4()), mass_f.key, relese_link['release-keys'][0]))
+                try:
+                    session.commit()
+                    print("RelationSwellFeature commit into DB - ok")
+                except Exception as FC:
+                    print(FC)
+                    return simplejson.dumps({'body': 'db commit fail'})
+
+            application_index += 1
+
+        # update number of teams and features for releases
+        release_links = data[0]['release-links']
+        df_releases = pd.DataFrame(release_links)
+        for column in ['swell-id', 'release-id']:
+            if column not in df_releases.columns:
+                df_releases[column] = np.NaN
+        df_releases['release_to_count'] = np.where(pd.isna(df_releases['swell-id']) == True, df_releases['release-id'],
+                                                   df_releases['swell-id'])
+        releases = list(set(df_releases['release_to_count'].to_list()))
+        update_teams_and_apps(session, releases)
+        # res = count_teams_and_features(session, releases)
+        # res['release_info']['updated'] = pd.to_datetime('today').date()
+        # res['release_info']['updated'] = res['release_info']['updated'].astype(str)
+        # if res['release_info'].shape[0] > 0:
+        #     on_update_stmt = create_update_stmt(ApplicationQuantity, res['release_info'])
+        #     try:
+        #         session.execute(on_update_stmt)
+        #         session.commit()
+        #     except Exception as ex:
+        #         print(ex)
+        #         session.rollback()
+        #         return simplejson.dumps({'body': 'ApplicationQuantity update fail'})
+
+        print("END of work with DB!")
+    finally:
+        session.close()
+    return simplejson.dumps({'body': 'ok'})
+
+
+
+@app.route('/portal/api/get-dashboard')
+@app.route('/portal/api/test/get-dashboard')
+@app.route('/portal/api/test/get-dashboard')
+def get_dashboard():
+    global Session
+    session = Session()
+    try:
+        df_release_row = pd.read_sql(session.query(ReleaseRow, ReleasePages.page,
+                                                   ApplicationQuantity.teams, ApplicationQuantity.applications,
+                                                   ApplicationQuantity.applications_psi_ready,
+                                                   ApplicationQuantity.applications_psi_not_ready,
+                                                   ApplicationQuantity.applications_psi_passed,
+                                                   ApplicationQuantity.applications_canceled).
+                                     join(ReleasePages, ReleasePages.release_id == ReleaseRow.release_id, isouter=True).
+                                     join(ApplicationQuantity, ApplicationQuantity.release_id == ReleaseRow.release_id,
+                                          isouter=True).
+                                     statement, engine)
+        df_all_release_dates = pd.read_sql(session.query(ReleaseDates).statement, engine)
+        df_extra_info = pd.read_sql(session.query(AndroidExtraInfo).statement, engine)
+        df_release_row = df_release_row.fillna(0)
+        resp = []
+        for ind, row in df_release_row.iterrows():
+            dates_json = {}
+            extra_info = {}
+            df_extra_info_row = df_extra_info[df_extra_info['release_id'] == row.release_id]
+            df_release_dates = df_all_release_dates[df_all_release_dates['release_id'] == row.release_id]
+
+            for ind, dates_row in df_release_dates.iterrows():
+                dates_json[dates_row.date_type] = dates_row.date
+
+            if df_extra_info_row.shape[0] > 0:
+                extra_info = df_extra_info[
+                    ["implement", "failures", "crashes_devices_coeffi", "installations", "crash_free_users_text",
+                     "crash_free_sessions_text"]].iloc[0].to_dict()
+                rating = df_extra_info[["number_ratings", "ratings"]].iloc[0].to_dict()
+                extra_info["rating"] = rating
+            resp.append({
+                "platform": row.platform,
+                "name": row['name'],
+                "id": row.release_id,
+                "key": row.jira_key,
+                "page": row.page,
+                "status": row.status,
+                "stat": {
+                    "teams": row.teams,
+                    "applications": row.applications,
+                    "applications_psi_ready": row.applications_psi_ready,
+                    "applications_psi_not_ready": row.applications_psi_not_ready,
+                    "applications_psi_passed": row.applications_psi_passed,
+                    "applications_canceled": row.applications_canceled,
+                    **extra_info
+                },
+                "dates": dates_json})
+        return simplejson.dumps({"body": resp})
+    except Exception as ex:
+        print(ex)
+        return simplejson.dumps({'body': f'Error:{str(ex)}'})
+    finally:
+        session.close()
+
+
+# def get_json():
+#     return send_from_directory(current_app.root_path, "release-dashboard.json")
 
 @app.route('/portal/api/get-feature/<path:feature_id>')
+@app.route('/portal/api/test/get-feature/<path:feature_id>')
 def feature_card(feature_id):
     global Session
     session = Session()
@@ -367,22 +732,23 @@ def feature_card(feature_id):
             "updated": df_feature_info['updated'][0]}
         except Exception as ex:
             print(ex)
-            return jsonify({'body': f'db select from FeatureDescriptionRow fail:{str(ex)}'})
+            return simplejson.dumps({'body': f'db select from FeatureDescriptionRow fail:{str(ex)}'})
 
         try:
             # подянем релизы-application по ID фичи
             df_req_release = pd.read_sql(
                 session.query(RequestRelease).filter_by(feature_id=feature_id).statement, engine)
             df_req_release = df_req_release[
-                ['application_id', 'application_key', 'feature_id', 'release_id', 'release_key', 'segment', 'request_type']]
+                ['application_id', 'application_key', 'feature_id', 'release_id', 'release_key', 'segment', 'request_type', "status"]]
+            df_req_release.rename(columns = {"status": "app_status"}, inplace = True)
             application_lst = list(set(df_req_release['application_id'].to_list()))
             application_key_lst = list(set(df_req_release['application_key'].to_list()))
             release_lst = list(set(df_req_release['release_id'].to_list()))
         except Exception as ex:
             print(ex)
-            return jsonify({'body': f'db select from RequestRelease fail:{str(ex)}'})
+            return simplejson.dumps({'body': f'db select from RequestRelease fail:{str(ex)}'})
         if len(application_key_lst) == 0:
-            return jsonify({'body': []})
+            return simplejson.dumps({'body': []})
 
         try:
             project_key = application_key_lst[0].split('-')[0]
@@ -394,7 +760,7 @@ def feature_card(feature_id):
                 project_name =""
         except Exception as ex:
             print(ex)
-            return jsonify({'body': f'db select from ProjectDescription fail:{str(ex)}'})
+            return simplejson.dumps({'body': f'db select from ProjectDescription fail:{str(ex)}'})
 
         try:
             # Подтянем информацию по релизу
@@ -402,12 +768,12 @@ def feature_card(feature_id):
                session.query(ReleaseRow).filter(ReleaseRow.release_id.in_(release_lst)).statement, engine)
         except Exception as ex:
             print(ex)
-            return jsonify({'body': f'db select from ReleaseRow fail:{str(ex)}'})
+            return simplejson.dumps({'body': f'db select from ReleaseRow fail:{str(ex)}'})
         try:
             df_release_dates = pd.read_sql(
                 session.query(ReleaseDates).filter(ReleaseDates.release_id.in_(release_lst)).statement, engine)
         except Exception as ex:
-            return jsonify({'body': f'db select from ReleaseDates fail:{str(ex)}'})
+            return simplejson.dumps({'body': f'db select from ReleaseDates fail:{str(ex)}'})
         try:
             # Выберем stories по каждому из application
             df_rel_feature = pd.read_sql(session.query(RelationRelFeature).filter(
@@ -415,7 +781,7 @@ def feature_card(feature_id):
            #df_rel_feature['application_id'] = df_rel_feature['application_id'].astype(int)
         except Exception as ex:
             print(ex)
-            return jsonify({'body': f'db select from RelationRelFeature fail:{str(ex)}'})
+            return simplejson.dumps({'body': f'db select from RelationRelFeature fail:{str(ex)}'})
 
         df_req_release = pd.merge(df_req_release, df_release_row, on='release_id', how="inner")
         df_req_release.rename(columns={'platform': 'platform_release'}, inplace=True)
@@ -436,7 +802,7 @@ def feature_card(feature_id):
                 team_name = ""
         except Exception as ex:
             print(ex)
-            return jsonify({'body': f'db select from ProjectDescription fail:{str(ex)}'})
+            return simplejson.dumps({'body': f'db select from ProjectDescription fail:{str(ex)}'})
 
         # Выберем записи свеллов по каждому из application
         try:
@@ -444,7 +810,7 @@ def feature_card(feature_id):
                 RelationSwellFeature.application_id.in_(application_lst)).statement, engine)
         except Exception as ex:
             print(ex)
-            return jsonify({'body': f'db select from RelationSwellFeature fail:{str(ex)}'})
+            return simplejson.dumps({'body': f'db select from RelationSwellFeature fail:{str(ex)}'})
 
         df_swell_feature = df_swell_feature[['application_id', 'platform', 'swell_key', 'request_type']]
         df_swell_feature.rename(columns={'request_type': 'request_type_swell'}, inplace=True)
@@ -478,8 +844,36 @@ def feature_card(feature_id):
                          }, inplace=True)
         except Exception as ex:
             print(ex)
-            return jsonify({'body': f'db select from DOR or DORInformation fail:{str(ex)}'})
-
+            return simplejson.dumps({'body': f'db select from DOR or DORInformation fail:{str(ex)}'})
+        # try:
+        #     # Подтянем все ДОРы по каждому из application
+        #     df_dor = pd.read_sql(session.query(DOR).filter(DOR.application_id.in_(application_lst)).statement, engine)
+        #     df_dor['DOR-stat'] = 1
+        #     df_statuses = df_dor.groupby(['application_id', 'status'])['DOR-stat'].sum().reset_index()
+        #     df_dor = df_dor[["application_id", "subtask_key", "dor_type_id", "content", "status", "user", "assignee_key",
+        #                      "assignee_name", "assignee_email", "last_update"]]
+        #     df_dor.rename(columns={"application_id": "application-id","subtask_key":"subtask-key", "dor_type_id": "dor-type-id",
+        #                            "assignee_key": "assignee-key", "assignee_name": "assignee-name",
+        #                            "assignee_email":"assignee-email", "last_update": "last-update"}, inplace=True)
+        #     dor_type_id_lst = list(set(df_dor["dor-type-id"].to_list()))
+        # except Exception as ex:
+        #     print(ex)
+        #     return jsonify({'body': f'db select from DOR fail:{str(ex)}'})
+        # try:
+        #     # Подтянем инфомацию по тем типам ДОРов которые есть в выборке ДОРов
+        #     df_dor_info = pd.read_sql(
+        #         session.query(DORInformation).filter(DORInformation.dor_type_id.in_(dor_type_id_lst)).statement, engine)
+        #     df_dor_info = df_dor_info[
+        #         ["dor_type_id", "category", "dor_name", "label", "short_description", "upper_text", "placeholder",
+        #          "description", "dor_type", "close_date"]]
+        #     df_dor_info = df_dor_info.sort_values(by='dor_type_id')
+        #     df_dor_info = df_dor_info.drop_duplicates(subset='dor_type_id', keep="first")
+        #     df_dor_info.rename(columns={"dor_type_id": "dor-type-id", "dor_name": "name", "short_description": "short-desc",
+        #                                 "upper_text": "upper-text", "dor_type": "type", "close_date": "close-day",
+        #                                 }, inplace=True)
+        # except Exception as ex:
+        #     print(ex)
+        #     return jsonify({'body': f'db select from DORInformation fail:{str(ex)}'})
         df_statuses = df_statuses[df_statuses['status'].isin(['to-fill', 'to-fix', 'in-progress', 'complete']) == True]
         df_statuses['status'] = np.where(df_statuses['status'] == 'to-fill', 'DOR-to-fill', df_statuses['status'])
         df_statuses['status'] = np.where(df_statuses['status'] == 'to-fix', 'DOR-to-fix', df_statuses['status'])
@@ -502,7 +896,7 @@ def feature_card(feature_id):
                                   "type": release_row.type,
                                   "application-id": release_row.application_id,
                                   "application-key": release_row.application_key,
-                                  "application-status": "",
+                                  "application-status": release_row.app_status,
                                   "DOR-stat": DOR_app_stat['DOR-stat'],
                                   })
 
@@ -518,7 +912,7 @@ def feature_card(feature_id):
                                   "release-keys": "",
                                   "application-id": release_row.application_id,
                                   "application-key": release_row.application_key,
-                                  "application-status": "",
+                                  "application-status": release_row.app_status,
                                   "DOR-stat": DOR_app_stat['DOR-stat'],
                                   })
 
@@ -563,20 +957,22 @@ def feature_card(feature_id):
         feature_json = {'body': [body]}
     finally:
         session.close()
-    return jsonify(feature_json)
+    return simplejson.dumps(feature_json, ignore_nan=True)
 
 
 @app.route('/portal/api/get-card-release/<path:release_id>')
+@app.route('/portal/api/test/get-card-release/<path:release_id>')
 def release_card(release_id):
     global Session
+    #global tunnel
     session = Session()
     try:
         # Подтянем инфомацию по релизу
         df_release_info = pd.read_sql(
             session.query(ReleaseRow).filter_by(release_id=release_id).statement, engine)
         if df_release_info.shape[0] == 0:
-            return jsonify({'body': f"release_id {release_id} doesn't exist"})
-
+            return simplejson.dumps({'body': f"release_id {release_id} doesn't exist"})
+        release_key = df_release_info['jira_key'].iloc[0]
         df_release_dates = pd.read_sql(
             session.query(ReleaseDates).filter_by(release_id=release_id).statement, engine)
 
@@ -586,6 +982,13 @@ def release_card(release_id):
         application_lst = list(set(df_requests_release['application_id'].to_list()))
         feature_lst = list(set(df_requests_release['feature_id'].to_list()))
 
+        res = count_teams_and_apps(session, [release_id])
+        stat = {}
+        if release_key in res['apps_dict']:
+            stat = res['apps_dict'][release_key]
+        if release_key in res['teams_dict']:
+            stat["teams"] = res['teams_dict'][release_key]
+        stat["bugs"] = "464"
         df_features_descr = pd.read_sql(
             session.query(FeatureDescriptionRow).filter(FeatureDescriptionRow.feature_id.in_(feature_lst)).statement,
             engine)
@@ -602,6 +1005,13 @@ def release_card(release_id):
 
         df_dor_info = pd.read_sql(
             session.query(DORInformation).filter(DORInformation.dor_type_id.in_(dor_types_lst)).statement, engine)
+        # df_dor = pd.read_sql(
+        #     session.query(DOR).filter(DOR.application_id.in_(application_lst)).statement, engine)
+        #
+        # dor_types_lst = list(set(df_dor['dor_type_id'].to_list()))
+        #
+        # df_dor_info = pd.read_sql(
+        #     session.query(DORInformation).filter(DORInformation.dor_type_id.in_(dor_types_lst)).statement, engine)
 
         teams = session.query(ProjectDescription).all()
         team_dict = {row.key: row.name for row in teams}
@@ -664,24 +1074,19 @@ def release_card(release_id):
             "key": df_release_info['jira_key'][0],
             "page": "",
             "status": "",
-            "stat": {
-                "teams": "53",
-                "features": "77",
-                "features-psi-ready": "10",
-                "features-psi-notallowed": "67",
-                "features-psi-passed": "0",
-                "bugs": "464"
-            },
+            "stat": stat,
             "dates": release_dates,
             "DOR-info": dor_info,
             "features": features}]}
         session.close()
-        return jsonify(release_info)
+        return simplejson.dumps(release_info, ignore_nan=True)
     except Exception as ex:
         session.close()
-        return jsonify({'body': f'{str(ex)}'})
+        return simplejson.dumps({'body': f'{str(ex)}'})
+
 
 @app.route('/portal/api/update-DOR', methods=['POST'])
+@app.route('/portal/api/test/update-DOR', methods=['POST'])
 def update_dor():
     global Session
     session = Session()
@@ -762,6 +1167,7 @@ def update_dor():
 
 
 @app.route('/portal/api/create-mass-feature', methods=['POST'])
+@app.route('/portal/api/test/create-mass-feature', methods=['POST'])
 def create_mass_feature(**kw):
     global Session
     session = Session()
@@ -789,9 +1195,10 @@ def create_mass_feature(**kw):
     finally:
         session.close()
     new_mass_feature = {'body': [{'id': mass_id, 'key': new_issue_key.key}]}
-    return jsonify(new_mass_feature)
+    return simplejson.dumps(new_mass_feature, ignore_nan=True)
 
 @app.route('/portal/api/get-mass-features')
+@app.route('/portal/api/test/get-mass-features')
 def mass_features():
     global Session
     session = Session()
@@ -809,107 +1216,26 @@ def mass_features():
     for mass_f in mass_features:
         dict_in_body["mass-features"].append({"name": mass_f.name, "type":mass_f.type, "id":mass_f.id, "key":mass_f.key})
     dict_to_return['body'].append(dict_in_body)
-    return jsonify(dict_to_return)
+    return simplejson.dumps(dict_to_return, ignore_nan=True)
 
 @app.route('/portal/api/move-features', methods=['POST'])
+@app.route('/portal/api/test/move-features', methods=['POST'])
 def move_features():
-    resp = []
     global Session
-    content = request.get_json(silent=True)
-    try:
-        new_release_id = content['body'][0]['release-id']
-        application_lst = content['body'][0]['application-id']
-        if not isinstance(application_lst, list):
-            application_lst = [application_lst]
-        if len(application_lst) == 0:
-            raise ValueError()
-    except Exception as ex:
-            return jsonify({'body': [{"result": 400, "result-text": "Неверные входящие параметры"}]})
-
-    # check new release and platform
     try:
         session = Session()
-        df_release = pd.read_sql(session.query(ReleaseRow).filter_by(release_id=new_release_id).statement, engine)
-        if df_release.shape[0] == 0:
-            raise ValueError(f"Релиз {new_release_id} не найден")
-        new_release_key = df_release['jira_key'].iloc[0]
-        new_platform = df_release['platform'].iloc[0]
-
-        df_request_release = pd.read_sql(
-            session.query(RequestRelease).filter(RequestRelease.application_id.in_(application_lst)).statement, engine)
-
-        df_relationrelfeature = pd.read_sql(
-            session.query(RelationRelFeature).filter(RelationRelFeature.application_id.in_(application_lst)).statement,
-            engine)
-        df_all_app_info = pd.merge(df_request_release, df_relationrelfeature,
-                                   on=['application_id', 'platform', 'release_key'], how="inner")
-    except Exception as ex:
-            return jsonify({'body': [{"result": 500, "result-text": str(ex)}]})
+        resp = movefeatures(request, session)
     finally:
         session.close()
-
-    try:
-        jira = connect_jira()
-    except Exception as ex:
-        return jsonify({'body': [{"result": 500, "result-text": str(ex)}]})
-
-
-    for application in application_lst:
-        df_app_row = df_all_app_info[df_all_app_info['application_id'] == application]
-        if df_app_row.shape[0] == 0:
-            resp.append({"release-id": new_release_id, "application-id": application, "result": 400, "result-text": f"Инициатива {application} не найдена"})
-            continue
-        if df_app_row['platform'].iloc[0] != new_platform:
-            resp.append({"release-id": new_release_id, "application-id": application, "result": 400, "result-text": "Попытка изменения платформы"})
-            continue
-
-        try:
-            new_release_issue = jira.issue(new_release_key)
-            old_release = df_app_row['release_key'].iloc[0]
-            issue = jira.issue(df_app_row['story_key'].iloc[0])
-            # Сначала удалим связь со старым релизом
-            df_issue_links = pd.json_normalize(issue.raw, record_path=['fields', 'issuelinks'])
-            if 'outwardIssue.key' not in df_issue_links.columns:
-                df_issue_links['outwardIssue.key'] = np.NaN
-            if 'inwardIssue.key' not in df_issue_links.columns:
-                df_issue_links['inwardIssue.key'] = np.NaN
-            df_old_release_link = df_issue_links[
-                (df_issue_links['outwardIssue.key'] == old_release) | (
-                            df_issue_links['inwardIssue.key'] == old_release)]
-            if df_old_release_link.shape[0] > 0:
-                old_link_id = df_old_release_link['id'].iloc[0]
-                jira.delete_issue_link(old_link_id)
-            # Создадим связь с новым релизом
-            issue = jira.issue(df_app_row['story_key'].iloc[0])
-            jira.create_issue_link('is part of', issue, new_release_issue, None)
-        except Exception as ex:
-            resp.append({"release-id": new_release_id, "application-id": application, "result": 500, "result-text": str(ex)})
-            continue
-
-        try:
-            session = Session()
-            for req in session.query(RequestRelease).filter_by(application_id=application).all():
-                req.release_key = new_release_key
-                req.release_id = new_release_id
-            for rel in session.query(RelationRelFeature).filter_by(application_id=application).all():
-                rel.release_key = new_release_key
-            session.commit()
-            resp.append({"release-id": new_release_id, "application-id": application,"result": 200, "result-text": f"Инициатива {application} успешно привязана к релизу {new_release_id}"})
-        except Exception as ex:
-            resp.append({"release-id": new_release_id, "application-id": application, "result": 500,
-                                      "result-text": f"Инициатива {application} успешно привязана к релизу {new_release_id} в Jira, но при обновлении БД произошла ошибка:{str(ex)}"})
-            continue
-        finally:
-            session.close()
-    print(resp)
-    return jsonify({'body': resp})
+    return simplejson.dumps(resp, ignore_nan=True)
 
 @app.route('/portal/api/dashbord/update-release-info', methods=['POST'])
+@app.route('/portal/api/test/dashbord/update-release-info', methods=['POST'])
 def update_release_info():
     global Session
     content = request.get_json(silent=True)
     if 'body' not in content:
-        return jsonify({'body': [{"result": "", "result-text": "Неверные входящие параметры"}]})
+        return simplejson.dumps({'body': [{"result": "", "result-text": "Неверные входящие параметры"}]})
 
     df_dates = pd.DataFrame()
     df_query = pd.json_normalize(content['body'])
@@ -949,9 +1275,9 @@ def update_release_info():
             on_conflict_stmt = insert_stmt.on_duplicate_key_update(date=insert_stmt.inserted.date, status='U')
             session.execute(on_conflict_stmt)
             session.commit()
-        return jsonify({'body': [{"result": "", "result-text": "Изменения успешно созранены"}]})
+        return simplejson.dumps({'body': [{"result": "", "result-text": "Изменения успешно созранены"}]})
     except Exception as ex:
-        return jsonify({'body': [{"result": "", "result-text": str(ex)}]})
+        return simplejson.dumps({'body': [{"result": "", "result-text": str(ex)}]})
     finally:
         session.close()
 
@@ -959,17 +1285,14 @@ def update_release_info():
 
 # for local testing
 # @app.route('/portal/')
-# @app.route('/portal')
 # @app.route('/feature')
 # @app.route('/')
 # def feature():
 #     return render_template('index.html')
-
+#
 # @app.route('/', defaults={'path': ''})
 # @app.route('/portal/', defaults={'path':''})
 # @app.route('/portal/<path:path>')
-
-# # @app.route('/portal/<PATH:PATH>')
 # def index(path):
 #     True
 #     print('TEST - portal', file=sys.stderr)
@@ -978,6 +1301,6 @@ def update_release_info():
 #         return send_from_directory(path_to_file, path)
 #     else:
 #         return render_template('index.html')
-#
-Session, engine = create_db_session() #tunnel.local_bind_port
+
+Session, engine = create_db_session(mode) #tunnel.local_bind_port
 # app.run()
